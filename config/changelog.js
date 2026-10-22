@@ -164,6 +164,7 @@ const RELEASES = [
       'Security: The container image now requires Node.js 26.12.1 or newer, which closes the Brotli remote-code-execution flaw and the TLS certificate hostname bypasses of the October 2026 Node.js release. An outdated base image fails the build instead of shipping',
       'Security: follow-redirects updated to 1.16.1, which no longer forwards Authorization headers across a cross-origin redirect',
       'Fix: A Paperless-ngx URL written as an IPv6 literal (http://[fd00::5]:8000) is accepted instead of failing with "Hostname could not be resolved"',
+      'New: Skip rules keep documents away from OCR and AI - a page limit (MAX_PAGE_COUNT), a list of title parts (IGNORE_TITLE_PATTERNS) and recognition of copies of ignored documents by their text (IGNORE_REPEATED_CONTENT). Matches land on the ignored list with the rule as reason; taking one off the list processes it anyway',
     ],
   },
 ];

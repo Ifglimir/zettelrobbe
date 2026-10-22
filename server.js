@@ -15,6 +15,7 @@ const oidcRoutes = require('./routes/oidc');
 const oidcService = require('./services/oidcService');
 const { isAuthenticated } = require('./routes/auth');
 const mistralOcrService = require('./services/mistralOcrService');
+const skipRuleService = require('./services/skipRuleService');
 const ocrAutoProcessService = require('./services/ocrAutoProcessService');
 const duplicateReviewJobService = require('./services/duplicateReviewJobService');
 const duplicateMergeService = require('./services/duplicateMergeService');
@@ -759,6 +760,13 @@ async function processDocument(
 
     return queued;
   };
+
+  // Skip rules come before both OCR and AI: a hundred pages of terms and
+  // conditions should cost neither.
+  if (await skipRuleService.apply(originalData || doc, content)) {
+    retryTracker.delete(doc.id);
+    return null;
+  }
 
   if (!content || content.length < MIN_CONTENT_LENGTH) {
     console.debug(

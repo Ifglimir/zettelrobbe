@@ -127,9 +127,12 @@ because they were only ever looked at empty.
 1. `node-cron` fires on `config.scanInterval` (cron syntax, default `*/30 * * * *`).
 2. `scanDocuments()` pulls candidates from Paperless-ngx.
 3. A `retryTracker` Map caps attempts (max 3) to prevent infinite loops.
-4. Docs below `MIN_CONTENT_LENGTH` (default 10) are skipped or routed to OCR.
-5. If `PROCESS_PREDEFINED_DOCUMENTS=yes`, only docs whose tags match the `TAGS` env var are processed.
-6. The factory's AI service analyzes; results are written back via `paperlessService.updateDocument()`.
+4. Skip rules (`services/skipRuleService.js`: `MAX_PAGE_COUNT`, `IGNORE_TITLE_PATTERNS`, text fingerprint of
+   ignored docs) move a doc to the ignored list before any OCR or AI call; the webhook applies them too,
+   a manual rescan does not. Unignoring a doc exempts it from the rules.
+5. Docs below `MIN_CONTENT_LENGTH` (default 10) are skipped or routed to OCR.
+6. If `PROCESS_PREDEFINED_DOCUMENTS=yes`, only docs whose tags match the `TAGS` env var are processed.
+7. The factory's AI service analyzes; results are written back via `paperlessService.updateDocument()`.
    A global `__paperlessAiScanControl` object supports stop-requests mid-scan.
 
 ## Configuration system (important)

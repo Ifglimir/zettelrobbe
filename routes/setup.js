@@ -33,6 +33,7 @@ const {
 } = require('./auth.js');
 const customService = require('../services/customService.js');
 const mistralOcrService = require('../services/mistralOcrService');
+const skipRuleService = require('../services/skipRuleService');
 const quickstartService = require('../services/quickstartService');
 const reconciliationService = require('../services/reconciliationService');
 const scanHealthService = require('../services/scanHealthService');
@@ -3149,7 +3150,8 @@ async function processDocument(
   existingTags,
   existingCorrespondentList,
   existingDocumentTypesList,
-  customPrompt = null
+  customPrompt = null,
+  { applySkipRules = false } = {}
 ) {
   const isProcessed = await documentModel.isDocumentProcessed(doc.id);
   if (isProcessed) {
@@ -3188,6 +3190,22 @@ async function processDocument(
     paperlessService.getDocumentContent(doc.id),
     paperlessService.getDocument(doc.id),
   ]);
+
+  // A webhook delivers what Paperless-ngx just consumed, so the ignored list
+  // and the skip rules hold here as in the scan. A rescan asked for by hand
+  // passes both.
+  if (applySkipRules) {
+    if (await documentModel.isDocumentIgnored(doc.id)) {
+      await documentModel.clearProcessingStatusByDocumentId(doc.id);
+      console.log(
+        `[DEBUG] Document ${doc.id} is on the ignored list, skipping`
+      );
+      return null;
+    }
+    if (await skipRuleService.apply(originalData || doc, content)) {
+      return null;
+    }
+  }
 
   const minContentLength = config.minContentLength;
   if (!content || content.length < minContentLength) {
@@ -3629,6 +3647,9 @@ const ENV_EXPORT_GROUPS = [
       'ADD_AI_PROCESSED_TAG',
       'AI_PROCESSED_TAG_NAME',
       'MIN_CONTENT_LENGTH',
+      'MAX_PAGE_COUNT',
+      'IGNORE_TITLE_PATTERNS',
+      'IGNORE_REPEATED_CONTENT',
       'USE_EXISTING_DATA',
     ],
   },
@@ -6841,7 +6862,7 @@ async function processQueue(customPrompt) {
     const existingDocumentTypesList = toNameList(existingDocumentTypes);
 
     while (documentQueue.length > 0) {
-      const doc = documentQueue.shift();
+      const { document: doc, applySkipRules } = documentQueue.shift();
 
       try {
         const result = await processDocument(
@@ -6849,7 +6870,8 @@ async function processQueue(customPrompt) {
           existingTagNames,
           existingCorrespondentNames,
           existingDocumentTypesList,
-          customPrompt
+          customPrompt,
+          { applySkipRules }
         );
         if (!result) continue;
 
@@ -6939,7 +6961,7 @@ async function rescanDocumentsByIds(ids) {
   await removeThumbnailCacheForDocumentIds(resolvedIds);
 
   for (const entry of resolvedDocuments) {
-    documentQueue.push(entry.document);
+    documentQueue.push({ document: entry.document, applySkipRules: false });
   }
   const queued = resolvedDocuments.length;
 
@@ -7056,7 +7078,7 @@ router.post('/api/webhook/document', isAuthenticated, async (req, res) => {
         return res.status(404).send(`Document with ID ${documentId} not found`);
       }
 
-      documentQueue.push(document);
+      documentQueue.push({ document, applySkipRules: true });
       if (prompt) {
         console.log('[DEBUG] Using custom prompt:', prompt);
         await processQueue(prompt);
@@ -7465,6 +7487,9 @@ router.get('/settings', async (req, res) => {
         : process.env.TRUST_PROXY,
     COOKIE_SECURE_MODE: process.env.COOKIE_SECURE_MODE || 'auto',
     MIN_CONTENT_LENGTH: process.env.MIN_CONTENT_LENGTH || '10',
+    MAX_PAGE_COUNT: process.env.MAX_PAGE_COUNT || '0',
+    IGNORE_TITLE_PATTERNS: normalizeArray(process.env.IGNORE_TITLE_PATTERNS),
+    IGNORE_REPEATED_CONTENT: process.env.IGNORE_REPEATED_CONTENT || 'yes',
     PAPERLESS_AI_PORT: process.env.PAPERLESS_AI_PORT || '3000',
     LOG_LEVEL: process.env.LOG_LEVEL || 'info',
     DATE_FORMAT: process.env.DATE_FORMAT || 'DD.MM.YYYY',
@@ -7500,6 +7525,9 @@ router.get('/settings', async (req, res) => {
       savedConfig.TAGS = normalizeArray(savedConfig.TAGS);
       savedConfig.IGNORE_TAGS = normalizeArray(savedConfig.IGNORE_TAGS);
       savedConfig.PROMPT_TAGS = normalizeArray(savedConfig.PROMPT_TAGS);
+      savedConfig.IGNORE_TITLE_PATTERNS = normalizeArray(
+        savedConfig.IGNORE_TITLE_PATTERNS
+      );
 
       config = { ...config, ...savedConfig };
     }
@@ -9180,6 +9208,9 @@ router.post('/settings', express.json(), async (req, res) => {
       trustProxy,
       cookieSecureMode,
       minContentLength,
+      maxPageCount,
+      ignoreTitlePatterns,
+      ignoreRepeatedContent,
       paperlessAiPort,
       externalApiAllowPrivateIps,
       logLevel,
@@ -9319,6 +9350,9 @@ router.post('/settings', express.json(), async (req, res) => {
           : process.env.TRUST_PROXY,
       COOKIE_SECURE_MODE: process.env.COOKIE_SECURE_MODE || 'auto',
       MIN_CONTENT_LENGTH: process.env.MIN_CONTENT_LENGTH || '10',
+      MAX_PAGE_COUNT: process.env.MAX_PAGE_COUNT || '0',
+      IGNORE_TITLE_PATTERNS: process.env.IGNORE_TITLE_PATTERNS || '',
+      IGNORE_REPEATED_CONTENT: process.env.IGNORE_REPEATED_CONTENT || 'yes',
       PAPERLESS_AI_PORT: process.env.PAPERLESS_AI_PORT || '3000',
       LOG_LEVEL: process.env.LOG_LEVEL || 'info',
       DATE_FORMAT: process.env.DATE_FORMAT || 'DD.MM.YYYY',
@@ -10178,6 +10212,25 @@ router.post('/settings', express.json(), async (req, res) => {
       }
     }
     if (minContentLength) updatedConfig.MIN_CONTENT_LENGTH = minContentLength;
+    if (maxPageCount !== undefined) {
+      const pages = String(maxPageCount).trim();
+      if (pages === '') {
+        updatedConfig.MAX_PAGE_COUNT = '0';
+      } else if (/^\d+$/.test(pages)) {
+        updatedConfig.MAX_PAGE_COUNT = String(parseInt(pages, 10));
+      } else {
+        return res.status(400).json({
+          error:
+            'Invalid page limit. Use a whole number of pages, or 0 for no limit.',
+        });
+      }
+    }
+    if (ignoreTitlePatterns !== undefined)
+      updatedConfig.IGNORE_TITLE_PATTERNS =
+        normalizeArray(ignoreTitlePatterns).join(',');
+    if (ignoreRepeatedContent !== undefined)
+      updatedConfig.IGNORE_REPEATED_CONTENT =
+        ignoreRepeatedContent === 'no' ? 'no' : 'yes';
     if (paperlessAiPort) updatedConfig.PAPERLESS_AI_PORT = paperlessAiPort;
     if (typeof logLevel === 'string') {
       const normalizedLogLevel = logLevel.trim().toLowerCase();
@@ -11615,6 +11668,10 @@ router.post('/api/ignored/add', isAuthenticated, async (req, res) => {
       if (wasAdded) added += 1;
     }
 
+    // In the background: the fingerprint lets later copies of the same text
+    // skip OCR and AI, and fetching it must not hold up the answer.
+    skipRuleService.rememberFingerprints(documentIds);
+
     const skipped = documentIds.length - added;
     return res.json({
       success: true,
@@ -11633,6 +11690,233 @@ router.post('/api/ignored/add', isAuthenticated, async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /api/ignored/suggest/{documentId}:
+ *   get:
+ *     summary: Propose skip rules built from one document
+ *     description: |
+ *       Reads the document from Paperless-ngx and proposes what skipping it by
+ *       hand could also cover: copies with the same text, a part of its title
+ *       or file name (with how many history entries contain it), and a page
+ *       limit for long documents. Changes nothing.
+ *     tags:
+ *       - Documents
+ *     security:
+ *       - BearerAuth: []
+ *       - ApiKeyAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: documentId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *     responses:
+ *       200:
+ *         description: The document's facts and a proposal per rule
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     document:
+ *                       type: object
+ *                       properties:
+ *                         id:
+ *                           type: integer
+ *                         title:
+ *                           type: string
+ *                         fileName:
+ *                           type: string
+ *                         pageCount:
+ *                           type: integer
+ *                           nullable: true
+ *                         correspondent:
+ *                           type: string
+ *                           nullable: true
+ *                         characters:
+ *                           type: integer
+ *                     sameText:
+ *                       type: object
+ *                       properties:
+ *                         available:
+ *                           type: boolean
+ *                           description: False when the text is too short to compare.
+ *                         enabled:
+ *                           type: boolean
+ *                           description: IGNORE_REPEATED_CONTENT
+ *                     title:
+ *                       type: object
+ *                       properties:
+ *                         suggestions:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               pattern:
+ *                                 type: string
+ *                               historyMatches:
+ *                                 type: integer
+ *                         existing:
+ *                           type: array
+ *                           items:
+ *                             type: string
+ *                     pageLimit:
+ *                       type: object
+ *                       properties:
+ *                         current:
+ *                           type: integer
+ *                         suggested:
+ *                           type: integer
+ *                           nullable: true
+ *       400:
+ *         description: Invalid document id
+ *       404:
+ *         description: Document not found in Paperless-ngx
+ */
+router.get(
+  '/api/ignored/suggest/:documentId',
+  isAuthenticated,
+  async (req, res) => {
+    try {
+      const documentId = parseInt(req.params.documentId, 10);
+      if (!Number.isInteger(documentId) || documentId < 1) {
+        return res
+          .status(400)
+          .json({ success: false, error: 'Invalid document ID' });
+      }
+      const data = await skipRuleService.suggest(documentId);
+      if (!data) {
+        return res
+          .status(404)
+          .json({ success: false, error: `Document ${documentId} not found` });
+      }
+      return res.json({ success: true, data });
+    } catch (error) {
+      console.error('[ERROR] GET /api/ignored/suggest/:documentId:', error);
+      return res.status(error?.response?.status === 404 ? 404 : 500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/ignored/skip:
+ *   post:
+ *     summary: Skip one document and store rules for documents like it
+ *     description: |
+ *       Puts the document on the ignored list and, as chosen, keeps its text
+ *       fingerprint (so copies are skipped), adds a title part to
+ *       IGNORE_TITLE_PATTERNS and sets MAX_PAGE_COUNT. A value the container
+ *       injects is not changed and is listed in notSaved.
+ *     tags:
+ *       - Documents
+ *     security:
+ *       - BearerAuth: []
+ *       - ApiKeyAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - documentId
+ *             properties:
+ *               documentId:
+ *                 type: integer
+ *                 minimum: 1
+ *               sameText:
+ *                 type: boolean
+ *                 default: true
+ *               titlePattern:
+ *                 type: string
+ *                 nullable: true
+ *               pageLimit:
+ *                 type: integer
+ *                 minimum: 1
+ *                 nullable: true
+ *     responses:
+ *       200:
+ *         description: The document is ignored and the rules are stored
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     rules:
+ *                       type: array
+ *                       items:
+ *                         type: string
+ *                     notSaved:
+ *                       type: array
+ *                       items:
+ *                         type: string
+ *                 message:
+ *                   type: string
+ *       400:
+ *         description: Invalid document id or page limit
+ *       404:
+ *         description: Document not found in Paperless-ngx
+ */
+router.post('/api/ignored/skip', isAuthenticated, async (req, res) => {
+  try {
+    const documentId = parseInt(req.body?.documentId, 10);
+    if (!Number.isInteger(documentId) || documentId < 1) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'Invalid document ID' });
+    }
+    const rawLimit = req.body?.pageLimit;
+    const pageLimit =
+      rawLimit === undefined || rawLimit === null || rawLimit === ''
+        ? null
+        : Number(rawLimit);
+    if (pageLimit !== null && !(Number.isInteger(pageLimit) && pageLimit > 0)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid page limit. Use a whole number of pages.',
+      });
+    }
+
+    const data = await skipRuleService.skipDocument(documentId, {
+      sameText: req.body?.sameText !== false,
+      titlePattern:
+        typeof req.body?.titlePattern === 'string'
+          ? req.body.titlePattern
+          : null,
+      pageLimit,
+    });
+    const notSavedNote = data.notSaved.length
+      ? ` Set by the container, not changed: ${data.notSaved.join(', ')}.`
+      : '';
+    return res.json({
+      success: true,
+      data,
+      message: `Document ${documentId} skipped (${data.rules.join(', ')}).${notSavedNote}`,
+    });
+  } catch (error) {
+    console.error('[ERROR] POST /api/ignored/skip:', error);
+    const status =
+      error?.status === 404 || error?.response?.status === 404 ? 404 : 500;
+    return res.status(status).json({ success: false, error: error.message });
+  }
+});
+
 // API: Remove a document from the ignored list (unignore)
 router.delete('/api/ignored/:documentId', isAuthenticated, async (req, res) => {
   try {
@@ -11647,7 +11931,7 @@ router.delete('/api/ignored/:documentId', isAuthenticated, async (req, res) => {
     return res.json({
       success: removed,
       message: removed
-        ? `Document ${documentId} removed from ignored list. It can be scanned again.`
+        ? `Document ${documentId} removed from ignored list. It will be processed again, even if a skip rule matches it.`
         : `Document ${documentId} was not in ignored list.`,
     });
   } catch (error) {
@@ -11704,6 +11988,7 @@ router.post(
       );
       await documentModel.resetFailedDocument(documentId);
       await documentModel.clearProcessingStatusByDocumentId(documentId);
+      skipRuleService.rememberFingerprints([documentId]);
 
       return res.json({
         success: true,
