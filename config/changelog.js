@@ -157,6 +157,15 @@ const RELEASES = [
       'Security: The login no longer reveals whether a username exists, a two-factor code is accepted only once, and the health endpoint keeps scanner and Paperless-ngx details behind authentication. Contributed by <a href="https://github.com/krauseerl">@krauseerl</a>',
     ],
   },
+  {
+    version: 'v2026.10.02',
+    entries: [
+      'Security: The SSRF check now recognises IPv4-mapped IPv6 answers in every spelling. A DNS answer of ::ffff:7f00:1 - the form resolvers actually emit - slipped past the loopback, private-network and cloud-metadata rules, while the equivalent ::ffff:127.0.0.1 was blocked',
+      'Security: The container image now requires Node.js 26.12.1 or newer, which closes the Brotli remote-code-execution flaw and the TLS certificate hostname bypasses of the October 2026 Node.js release. An outdated base image fails the build instead of shipping',
+      'Security: follow-redirects updated to 1.16.1, which no longer forwards Authorization headers across a cross-origin redirect',
+      'Fix: A Paperless-ngx URL written as an IPv6 literal (http://[fd00::5]:8000) is accepted instead of failing with "Hostname could not be resolved"',
+    ],
+  },
 ];
 
 const latestRelease = RELEASES[RELEASES.length - 1];
