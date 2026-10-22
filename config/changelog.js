@@ -143,6 +143,29 @@ const RELEASES = [
       'New: Settings sections for Duplicates and Simplify tags',
     ],
   },
+  {
+    version: 'v2026.10.01',
+    entries: [
+      'New: Anthropic (Claude) as AI provider. Settings and the setup wizard take an API key and list the Claude models it can use; Claude Haiku 5.5 is the default. The analysis comes back as structured output, and prompt caching keeps the repeated instructions cheap',
+      'New: Claude as OCR provider. It reads PDFs and images directly and uses the API key and model of the AI provider unless OCR has its own',
+      'Fix: Saving the settings no longer signs everybody out. The restart after a save created a new sign-in key, so every open session ended, and a page left open only showed vague errors such as "Model discovery failed". A session that ends now sends the page to the login screen',
+      'Fix: The manual tagging page uses the current design again. Its buttons, cards, document preview and tag chips were still built on styles that no longer exist',
+      'New: Single sign-on with any OpenID Connect provider (Authentik, Keycloak, Entra ID and others). Contributed by <a href="https://github.com/krauseerl">@krauseerl</a> in <a href="https://github.com/admonstrator/zettelrobbe/pull/372">#372</a>. E-mail addresses the provider marks as unverified are refused unless OIDC_ALLOW_UNVERIFIED_EMAIL=yes',
+      'New: Single sign-on can be set up on the settings page, including a "Test connection" button. Values set by the container stay locked there',
+      'Improvement: The settings page shows one topic at a time, grouped in a sidebar, with a search field and a save bar that counts unsaved changes across all topics',
+      'Improvement: The Claude model is picked from a dropdown filled by "Fetch Models", like every other model',
+      'Security: The login no longer reveals whether a username exists, a two-factor code is accepted only once, and the health endpoint keeps scanner and Paperless-ngx details behind authentication. Contributed by <a href="https://github.com/krauseerl">@krauseerl</a>',
+    ],
+  },
+  {
+    version: 'v2026.10.02',
+    entries: [
+      'Security: The SSRF check now recognises IPv4-mapped IPv6 answers in every spelling. A DNS answer of ::ffff:7f00:1 - the form resolvers actually emit - slipped past the loopback, private-network and cloud-metadata rules, while the equivalent ::ffff:127.0.0.1 was blocked',
+      'Security: The container image now requires Node.js 26.12.1 or newer, which closes the Brotli remote-code-execution flaw and the TLS certificate hostname bypasses of the October 2026 Node.js release. An outdated base image fails the build instead of shipping',
+      'Security: follow-redirects updated to 1.16.1, which no longer forwards Authorization headers across a cross-origin redirect',
+      'Fix: A Paperless-ngx URL written as an IPv6 literal (http://[fd00::5]:8000) is accepted instead of failing with "Hostname could not be resolved"',
+    ],
+  },
 ];
 
 const latestRelease = RELEASES[RELEASES.length - 1];

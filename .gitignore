@@ -38,3 +38,4 @@ COPILOT.md
 GEMINI.md
 CVE/*
 .todo/*
+tests/ui-review/

@@ -77,6 +77,11 @@ async function calculateTokens(
   text,
   model = process.env.OPENAI_MODEL || 'gpt-4o-mini'
 ) {
+  if (isClaudeModel(model)) {
+    console.log(`[DEBUG] Using Claude token estimation for model: ${model}`);
+    return estimateTokensForClaude(text);
+  }
+
   try {
     const compatibleModel = getCompatibleModel(model);
 
@@ -161,6 +166,13 @@ async function truncateToTokenLimit(
     throw new Error(
       'truncateToTokenLimit: maxTokens must be a positive finite number'
     );
+  }
+
+  if (isClaudeModel(model)) {
+    console.log(
+      `[DEBUG] Using Claude character-based truncation for model: ${model}`
+    );
+    return truncateForClaude(text, maxTokens);
   }
 
   try {
@@ -330,21 +342,106 @@ function stripIpv6Brackets(value) {
   return String(value || '').replace(/^\[|\]$/g, '');
 }
 
+/**
+ * Expands an IPv6 address into its eight 16-bit groups.
+ *
+ * The "::" run-length compression and a trailing dotted quad
+ * (`::ffff:127.0.0.1`) mean one address has many spellings; resolvers hand out
+ * the compressed hex form (`::ffff:7f00:1`), so comparisons have to run on the
+ * expanded groups rather than on the text.
+ *
+ * @param {string} ipAddress - Lowercased IPv6 address, without brackets
+ * @returns {number[]|null} Eight groups, or null when the input is not IPv6
+ */
+function expandIpv6Groups(ipAddress) {
+  if (net.isIP(ipAddress) !== 6) {
+    return null;
+  }
+
+  let text = ipAddress;
+
+  // A trailing dotted quad carries the low 32 bits. Rewriting it as two hex
+  // groups leaves a single spelling to parse below.
+  const dottedTail = text.match(/(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (dottedTail) {
+    const octets = dottedTail[1].split('.').map(Number);
+    const high = ((octets[0] << 8) | octets[1]).toString(16);
+    const low = ((octets[2] << 8) | octets[3]).toString(16);
+    text = text.slice(0, text.length - dottedTail[1].length) + high + ':' + low;
+  }
+
+  const [headText, tailText] = text.split('::');
+  const head = headText ? headText.split(':') : [];
+  const tail = tailText ? tailText.split(':') : [];
+  const missing = 8 - head.length - tail.length;
+
+  if (missing < 0) {
+    return null;
+  }
+
+  const groups = [...head, ...new Array(missing).fill('0'), ...tail];
+
+  return groups.length === 8
+    ? groups.map((group) => parseInt(group, 16))
+    : null;
+}
+
+function isAllZeroGroups(groups) {
+  return groups.every((group) => group === 0);
+}
+
+/**
+ * Returns the IPv4 address embedded in an IPv6 address, in dotted form.
+ *
+ * IPv4-mapped (`::ffff:a.b.c.d`), IPv4-compatible (`::a.b.c.d`) and NAT64
+ * (`64:ff9b::a.b.c.d`) addresses all end up talking to an IPv4 endpoint, so the
+ * IPv4 rules have to decide whether they are internal. Without this, an
+ * attacker-controlled AAAA record of `::ffff:7f00:1` or `::ffff:a9fe:a9fe`
+ * passes the IPv6 checks untouched and reaches loopback or the cloud metadata
+ * service.
+ *
+ * @param {string} ipAddress - Lowercased IPv6 address, without brackets
+ * @returns {string|null} The embedded IPv4 address, or null when there is none
+ */
+function extractEmbeddedIpv4Address(ipAddress) {
+  const groups = expandIpv6Groups(ipAddress);
+
+  if (!groups) {
+    return null;
+  }
+
+  const prefix = groups.slice(0, 6);
+  const isIpv4Mapped =
+    isAllZeroGroups(prefix.slice(0, 5)) && prefix[5] === 0xffff;
+  const isIpv4Compatible = isAllZeroGroups(prefix);
+  const isNat64 =
+    prefix[0] === 0x0064 &&
+    prefix[1] === 0xff9b &&
+    isAllZeroGroups(prefix.slice(2));
+
+  if (!isIpv4Mapped && !isIpv4Compatible && !isNat64) {
+    return null;
+  }
+
+  const [high, low] = groups.slice(6);
+
+  // :: and ::1 are IPv6 addresses in their own right, not embeddings, and the
+  // IPv6 rules already cover them.
+  if (isIpv4Compatible && high === 0 && low <= 1) {
+    return null;
+  }
+
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+}
+
 function normalizeIpAddress(ipAddress) {
   const normalized = stripIpv6Brackets(
     String(ipAddress || '')
       .trim()
       .toLowerCase()
   );
-  const mappedIpv4Match = normalized.match(
-    /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i
-  );
 
-  if (mappedIpv4Match) {
-    return mappedIpv4Match[1];
-  }
-
-  return normalized;
+  return extractEmbeddedIpv4Address(normalized) || normalized;
 }
 
 function isValidIpv4Address(ipAddress) {
@@ -453,8 +550,13 @@ function isPrivateOrInternalIpAddress(hostOrIp) {
 }
 
 async function resolveHostnameAddresses(hostname) {
-  if (net.isIP(hostname)) {
-    return { success: true, addresses: [hostname] };
+  // URL.hostname keeps the brackets around an IPv6 literal, which makes
+  // net.isIP() miss it and sends "[::1]" to the resolver instead of
+  // classifying it.
+  const ipLiteral = stripIpv6Brackets(hostname);
+
+  if (net.isIP(ipLiteral)) {
+    return { success: true, addresses: [ipLiteral] };
   }
 
   const [ipv4Result, ipv6Result] = await Promise.allSettled([
@@ -1023,6 +1125,63 @@ function estimateTokenCount(textOrLength) {
       : String(textOrLength ?? '').length;
 
   return Math.ceil(length / 4);
+}
+
+/**
+ * Claude models, by the name the Claude API knows them under.
+ *
+ * Their tokenizers are not tiktoken's, and the newer ones count noticeably
+ * more tokens per character than the ÷4 rule assumes (the current generation
+ * counts the same text as roughly 30% more tokens than the one before). An
+ * estimate that comes out low lets through a document the budget meant to
+ * cut, so Claude gets its own, more conservative rate. Every other model keeps
+ * the estimate it always had.
+ */
+const CLAUDE_MODEL_PATTERN = /^claude-/i;
+const CLAUDE_CHARS_PER_TOKEN = 3;
+
+/**
+ * @param {unknown} model
+ * @returns {boolean}
+ */
+function isClaudeModel(model) {
+  return CLAUDE_MODEL_PATTERN.test(String(model ?? '').trim());
+}
+
+/**
+ * Tokens of a text for a Claude model: about three characters each.
+ *
+ * @param {unknown} text
+ * @returns {number}
+ */
+function estimateTokensForClaude(text) {
+  return Math.ceil(String(text ?? '').length / CLAUDE_CHARS_PER_TOKEN);
+}
+
+/**
+ * truncateToTokenLimit() for a Claude model: the same character cut and word
+ * boundary as the other estimated models, at Claude's rate.
+ *
+ * @param {unknown} text
+ * @param {number} maxTokens - a positive finite number, checked by the caller
+ * @returns {string}
+ */
+function truncateForClaude(text, maxTokens) {
+  const source = typeof text === 'string' ? text : String(text ?? '');
+  if (estimateTokensForClaude(source) <= maxTokens) {
+    return source;
+  }
+
+  const maxChars = Math.floor(maxTokens * CLAUDE_CHARS_PER_TOKEN);
+  const truncatedText = source.substring(0, maxChars);
+
+  // Break at a word boundary when that costs little of the budget.
+  const lastSpaceIndex = truncatedText.lastIndexOf(' ');
+  if (lastSpaceIndex > maxChars * 0.8) {
+    return truncatedText.substring(0, lastSpaceIndex);
+  }
+
+  return truncatedText;
 }
 
 module.exports = {
