@@ -146,6 +146,130 @@ async function run() {
     assert.strictEqual(await documentModel.isSkipRuleExempt(40), true);
     assert.strictEqual(await documentModel.isSkipRuleExempt(10), true);
 
+    // Skipping by hand: proposals built from one document.
+    const { suggestTitleParts, suggestPageLimit } = skipRuleService;
+    assert.deepStrictEqual(
+      suggestTitleParts(
+        'Revolut Bank UAB – Terms and Conditions 2026-10-01',
+        'revolut_terms_2026-10.pdf',
+        'Revolut Bank UAB'
+      ),
+      [
+        'Terms and Conditions',
+        'Revolut Bank UAB – Terms and Conditions',
+        'revolut_terms',
+        'Revolut Bank UAB',
+      ],
+      'title parts without dates, the correspondent alone last'
+    );
+    assert.deepStrictEqual(suggestTitleParts('', '', ''), []);
+    assert.strictEqual(suggestPageLimit(112), 100);
+    assert.strictEqual(suggestPageLimit(31), 30);
+    assert.strictEqual(suggestPageLimit(8), null);
+    assert.strictEqual(suggestPageLimit(null), null);
+
+    await documentModel.addToHistory(
+      500,
+      [],
+      'Revolut Terms and Conditions 2025',
+      'Revolut'
+    );
+    await documentModel.addToHistory(501, [], 'Invoice 4711', 'Revolut');
+    assert.strictEqual(
+      await documentModel.countHistoryTitlesContaining(
+        'terms and conditions',
+        900
+      ),
+      1
+    );
+    assert.strictEqual(
+      await documentModel.countHistoryTitlesContaining('100%_off', 900),
+      0,
+      'LIKE wildcards in a title part are taken literally'
+    );
+
+    process.env.MAX_PAGE_COUNT = '0';
+    process.env.IGNORE_TITLE_PATTERNS = 'AGB';
+    paperlessService.getDocument = async (documentId) =>
+      documentId === 900
+        ? {
+            id: 900,
+            title: 'Revolut Bank UAB – Terms and Conditions',
+            original_file_name: 'revolut_terms_2026-10.pdf',
+            page_count: 112,
+            correspondent: 7,
+            content: LONG_TERMS,
+          }
+        : null;
+    paperlessService.getCorrespondentNameById = async () => ({
+      id: 7,
+      name: 'Revolut Bank UAB',
+    });
+
+    const proposal = await skipRuleService.suggest(900);
+    assert.strictEqual(proposal.document.pageCount, 112);
+    assert.strictEqual(proposal.document.correspondent, 'Revolut Bank UAB');
+    assert.strictEqual(proposal.sameText.available, true);
+    assert.strictEqual(
+      proposal.title.suggestions[0].pattern,
+      'Terms and Conditions'
+    );
+    assert.strictEqual(proposal.title.suggestions[0].historyMatches, 1);
+    assert.deepStrictEqual(proposal.title.existing, ['AGB']);
+    assert.strictEqual(proposal.pageLimit.suggested, 100);
+    assert.strictEqual(await skipRuleService.suggest(901), null);
+
+    const skipped = await skipRuleService.skipDocument(900, {
+      sameText: true,
+      titlePattern: 'Terms and Conditions',
+      pageLimit: 100,
+    });
+    assert.deepStrictEqual(skipped.notSaved, []);
+    assert.strictEqual(await documentModel.isDocumentIgnored(900), true);
+    assert.strictEqual(
+      process.env.IGNORE_TITLE_PATTERNS,
+      'AGB,Terms and Conditions'
+    );
+    assert.strictEqual(process.env.MAX_PAGE_COUNT, '100');
+    const overrides = JSON.parse(
+      await fs.readFile(
+        path.join(tempRoot, 'data', 'runtime-overrides.json'),
+        'utf8'
+      )
+    );
+    assert.strictEqual(
+      overrides.IGNORE_TITLE_PATTERNS,
+      'AGB,Terms and Conditions'
+    );
+    assert.strictEqual(overrides.MAX_PAGE_COUNT, '100');
+    const nextCopy = await skipRuleService.evaluate(
+      { id: 902, title: 'Mail attachment' },
+      LONG_TERMS
+    );
+    assert.strictEqual(nextCopy?.reason, 'Same text as #900');
+
+    // Without the text rule no fingerprint is kept, and a pattern on the list
+    // is not added twice.
+    paperlessService.getDocument = async (documentId) => ({
+      id: documentId,
+      title: 'Privacy notice',
+      content: otherTerms.toUpperCase() + ' extra',
+    });
+    await skipRuleService.skipDocument(903, {
+      sameText: false,
+      titlePattern: 'terms and conditions',
+    });
+    assert.strictEqual(
+      process.env.IGNORE_TITLE_PATTERNS,
+      'AGB,Terms and Conditions'
+    );
+    assert.strictEqual(
+      await documentModel.findIgnoredByContentHash(
+        skipRuleService.fingerprint(otherTerms.toUpperCase() + ' extra')
+      ),
+      null
+    );
+
     // Wiring: the scan checks the rules before the OCR fallback, the webhook
     // applies them and a rescan by hand does not.
     const server = await fs.readFile(path.join(repoRoot, 'server.js'), 'utf8');
@@ -170,6 +294,29 @@ async function run() {
       ),
       'a rescan by hand should bypass the skip rules'
     );
+
+    const historyJs = await fs.readFile(
+      path.join(repoRoot, 'public', 'js', 'history.js'),
+      'utf8'
+    );
+    assert.ok(historyJs.includes('/api/ignored/suggest/'));
+    assert.ok(historyJs.includes("'/api/ignored/skip'"));
+    const historyView = await fs.readFile(
+      path.join(repoRoot, 'views', 'history.ejs'),
+      'utf8'
+    );
+    for (const id of [
+      'skipDialog',
+      'skipRuleText',
+      'skipTitlePattern',
+      'skipPageLimit',
+      'skipDialogConfirm',
+    ]) {
+      assert.ok(
+        historyView.includes(`id="${id}"`),
+        `history view should render #${id}`
+      );
+    }
 
     console.log('PASS test-skip-rules');
   } finally {

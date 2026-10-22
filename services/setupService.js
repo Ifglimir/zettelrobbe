@@ -226,6 +226,41 @@ class SetupService {
     }
   }
 
+  /**
+   * Changes a few configuration values and keeps every other one as saved.
+   * saveConfig() writes the whole configuration and is for the settings form;
+   * this is for a single action that sets one or two values. Values the
+   * container injects are left alone, as everywhere else.
+   *
+   * @param {Record<string, string>} values
+   * @returns {Promise<string[]>} the keys that were changed
+   */
+  async updateConfigValues(values) {
+    const updates = this.filterProtectedInjectedConfig(values);
+    const keys = Object.keys(updates);
+    if (keys.length === 0) {
+      return keys;
+    }
+
+    if (this.isLegacyConfigSourceMode()) {
+      const current = (await this.loadConfig()) || {};
+      const envContent = Object.entries({ ...current, ...updates })
+        .map(([key, value]) => `${key}=${this.encodeEnvValue(value)}`)
+        .join('\n');
+      await fs.mkdir(path.dirname(this.envPath), { recursive: true });
+      await fs.writeFile(this.envPath, envContent);
+    }
+
+    await this.saveRuntimeOverrides({
+      ...(await this.loadRuntimeOverrides()),
+      ...updates,
+    });
+    keys.forEach((key) => {
+      process.env[key] = this.normalizeEnvironmentValue(updates[key]);
+    });
+    return keys;
+  }
+
   async clearRuntimeOverrides() {
     try {
       await fs.unlink(this.runtimeOverridesPath);

@@ -2360,6 +2360,25 @@ module.exports = {
     }
   },
 
+  /**
+   * How many documents in the history, other than the one given, carry this
+   * text in their title. Shown next to a title rule before it is saved.
+   */
+  async countHistoryTitlesContaining(text, excludeDocumentId = null) {
+    try {
+      const escaped = String(text).replace(/[\\%_]/g, (c) => `\\${c}`);
+      const row = db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM history_documents WHERE title LIKE ? ESCAPE '\\' AND document_id IS NOT ?"
+        )
+        .get(`%${escaped}%`, excludeDocumentId);
+      return row?.count || 0;
+    } catch (error) {
+      console.error('[ERROR] counting history titles:', error);
+      return 0;
+    }
+  },
+
   /** Stores the text fingerprint of an ignored document, if it has none yet. */
   async setIgnoredContentHash(documentId, contentHash) {
     try {

@@ -11690,6 +11690,233 @@ router.post('/api/ignored/add', isAuthenticated, async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /api/ignored/suggest/{documentId}:
+ *   get:
+ *     summary: Propose skip rules built from one document
+ *     description: |
+ *       Reads the document from Paperless-ngx and proposes what skipping it by
+ *       hand could also cover: copies with the same text, a part of its title
+ *       or file name (with how many history entries contain it), and a page
+ *       limit for long documents. Changes nothing.
+ *     tags:
+ *       - Documents
+ *     security:
+ *       - BearerAuth: []
+ *       - ApiKeyAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: documentId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *     responses:
+ *       200:
+ *         description: The document's facts and a proposal per rule
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     document:
+ *                       type: object
+ *                       properties:
+ *                         id:
+ *                           type: integer
+ *                         title:
+ *                           type: string
+ *                         fileName:
+ *                           type: string
+ *                         pageCount:
+ *                           type: integer
+ *                           nullable: true
+ *                         correspondent:
+ *                           type: string
+ *                           nullable: true
+ *                         characters:
+ *                           type: integer
+ *                     sameText:
+ *                       type: object
+ *                       properties:
+ *                         available:
+ *                           type: boolean
+ *                           description: False when the text is too short to compare.
+ *                         enabled:
+ *                           type: boolean
+ *                           description: IGNORE_REPEATED_CONTENT
+ *                     title:
+ *                       type: object
+ *                       properties:
+ *                         suggestions:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               pattern:
+ *                                 type: string
+ *                               historyMatches:
+ *                                 type: integer
+ *                         existing:
+ *                           type: array
+ *                           items:
+ *                             type: string
+ *                     pageLimit:
+ *                       type: object
+ *                       properties:
+ *                         current:
+ *                           type: integer
+ *                         suggested:
+ *                           type: integer
+ *                           nullable: true
+ *       400:
+ *         description: Invalid document id
+ *       404:
+ *         description: Document not found in Paperless-ngx
+ */
+router.get(
+  '/api/ignored/suggest/:documentId',
+  isAuthenticated,
+  async (req, res) => {
+    try {
+      const documentId = parseInt(req.params.documentId, 10);
+      if (!Number.isInteger(documentId) || documentId < 1) {
+        return res
+          .status(400)
+          .json({ success: false, error: 'Invalid document ID' });
+      }
+      const data = await skipRuleService.suggest(documentId);
+      if (!data) {
+        return res
+          .status(404)
+          .json({ success: false, error: `Document ${documentId} not found` });
+      }
+      return res.json({ success: true, data });
+    } catch (error) {
+      console.error('[ERROR] GET /api/ignored/suggest/:documentId:', error);
+      return res.status(error?.response?.status === 404 ? 404 : 500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/ignored/skip:
+ *   post:
+ *     summary: Skip one document and store rules for documents like it
+ *     description: |
+ *       Puts the document on the ignored list and, as chosen, keeps its text
+ *       fingerprint (so copies are skipped), adds a title part to
+ *       IGNORE_TITLE_PATTERNS and sets MAX_PAGE_COUNT. A value the container
+ *       injects is not changed and is listed in notSaved.
+ *     tags:
+ *       - Documents
+ *     security:
+ *       - BearerAuth: []
+ *       - ApiKeyAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - documentId
+ *             properties:
+ *               documentId:
+ *                 type: integer
+ *                 minimum: 1
+ *               sameText:
+ *                 type: boolean
+ *                 default: true
+ *               titlePattern:
+ *                 type: string
+ *                 nullable: true
+ *               pageLimit:
+ *                 type: integer
+ *                 minimum: 1
+ *                 nullable: true
+ *     responses:
+ *       200:
+ *         description: The document is ignored and the rules are stored
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     rules:
+ *                       type: array
+ *                       items:
+ *                         type: string
+ *                     notSaved:
+ *                       type: array
+ *                       items:
+ *                         type: string
+ *                 message:
+ *                   type: string
+ *       400:
+ *         description: Invalid document id or page limit
+ *       404:
+ *         description: Document not found in Paperless-ngx
+ */
+router.post('/api/ignored/skip', isAuthenticated, async (req, res) => {
+  try {
+    const documentId = parseInt(req.body?.documentId, 10);
+    if (!Number.isInteger(documentId) || documentId < 1) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'Invalid document ID' });
+    }
+    const rawLimit = req.body?.pageLimit;
+    const pageLimit =
+      rawLimit === undefined || rawLimit === null || rawLimit === ''
+        ? null
+        : Number(rawLimit);
+    if (pageLimit !== null && !(Number.isInteger(pageLimit) && pageLimit > 0)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid page limit. Use a whole number of pages.',
+      });
+    }
+
+    const data = await skipRuleService.skipDocument(documentId, {
+      sameText: req.body?.sameText !== false,
+      titlePattern:
+        typeof req.body?.titlePattern === 'string'
+          ? req.body.titlePattern
+          : null,
+      pageLimit,
+    });
+    const notSavedNote = data.notSaved.length
+      ? ` Set by the container, not changed: ${data.notSaved.join(', ')}.`
+      : '';
+    return res.json({
+      success: true,
+      data,
+      message: `Document ${documentId} skipped (${data.rules.join(', ')}).${notSavedNote}`,
+    });
+  } catch (error) {
+    console.error('[ERROR] POST /api/ignored/skip:', error);
+    const status =
+      error?.status === 404 || error?.response?.status === 404 ? 404 : 500;
+    return res.status(status).json({ success: false, error: error.message });
+  }
+});
+
 // API: Remove a document from the ignored list (unignore)
 router.delete('/api/ignored/:documentId', isAuthenticated, async (req, res) => {
   try {
