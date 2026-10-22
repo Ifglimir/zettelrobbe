@@ -35,6 +35,11 @@
 
 'use strict';
 
+// The fixtures are wall-clock timestamps without a zone and the page groups
+// them by local calendar day. Pinned to UTC so the three applies of one day
+// stay on one day in every zone; at UTC-10 one slid into the day before. (#362)
+process.env.TZ = 'UTC';
+
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
