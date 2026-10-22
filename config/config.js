@@ -394,6 +394,25 @@ const getOidcConfig = () => ({
   buttonTextColor: String(process.env.OIDC_BUTTON_TEXT_COLOR || '').trim(),
 });
 
+/* Skip rules: documents that never reach OCR or AI. Read on every call so a
+   change on the settings page applies to the next scan without a restart. */
+const getSkipRulesConfig = () => {
+  const maxPages = parseInt(process.env.MAX_PAGE_COUNT || '0', 10);
+  return {
+    // 0 or empty: no page limit.
+    maxPageCount: Number.isInteger(maxPages) && maxPages > 0 ? maxPages : 0,
+    // Comma-separated, matched case-insensitively anywhere in the title or the
+    // original file name.
+    titlePatterns: String(process.env.IGNORE_TITLE_PATTERNS || '')
+      .split(',')
+      .map((pattern) => pattern.trim())
+      .filter(Boolean),
+    // A document whose text equals that of an ignored document is ignored too.
+    ignoreRepeatedContent:
+      parseEnvBoolean(process.env.IGNORE_REPEATED_CONTENT, 'yes') === 'yes',
+  };
+};
+
 // Initialize limit functions with defaults
 const limitFunctions = {
   activateTagging: parseEnvBoolean(process.env.ACTIVATE_TAGGING, 'yes'),
@@ -467,6 +486,7 @@ module.exports = {
   getTrustProxy,
   getCookieSecureMode,
   getOidcConfig,
+  getSkipRulesConfig,
   isProtectedRuntimeEnvKey,
   get apiKey() {
     return getApiKey();

@@ -304,8 +304,11 @@ class TagsManager {
     tagInputId,
     tagsContainerId,
     tagsHiddenInputId,
-    addButtonId = null
+    addButtonId = null,
+    noun = 'tag'
   ) {
+    // What a chip is called in the dialogs: a tag, or a title pattern.
+    this.noun = noun;
     this.tagInput = document.getElementById(tagInputId); //'tagInput'
     this.tagsContainer = document.getElementById(tagsContainerId); // tagsContainer
     this.tagsHiddenInput = document.getElementById(tagsHiddenInputId); // tagsHiddenInput
@@ -351,8 +354,8 @@ class TagsManager {
   initializeTagRemoval(button) {
     button.addEventListener('click', async () => {
       const result = await zrDialog({
-        title: 'Remove Tag',
-        text: 'Are you sure you want to remove this tag?',
+        title: `Remove ${this.noun}`,
+        text: `Are you sure you want to remove this ${this.noun}?`,
         icon: 'question',
         showCancelButton: true,
         confirmButtonText: 'Yes, remove it',
@@ -383,7 +386,7 @@ class TagsManager {
     if (specialChars.test(tagText)) {
       await zrDialog({
         title: 'Invalid Characters',
-        text: 'Tags cannot contain commas, semi-colons, colons, or line breaks.',
+        text: `A ${this.noun} cannot contain commas, semi-colons, colons, or line breaks.`,
         icon: 'warning',
         confirmButtonText: 'OK',
         confirmButtonColor: '#3085d6',
@@ -504,6 +507,13 @@ function initializeCoreSettings() {
     'ignoreTagsContainer',
     'ignoreTags',
     'ignoreTagAddButton'
+  );
+  new TagsManager(
+    'ignoreTitlePatternInput',
+    'ignoreTitlePatternsContainer',
+    'ignoreTitlePatterns',
+    'ignoreTitlePatternAddButton',
+    'title pattern'
   );
   new TagsManager('promptTagInput', 'promptTagsContainer', 'promptTags');
   new PromptManager();
@@ -3228,6 +3238,12 @@ function initializeRuntimeOverridePills() {
     { selector: '#cookieSecureMode', envKey: 'COOKIE_SECURE_MODE' },
     { selector: '#dateFormat', envKey: 'DATE_FORMAT' },
     { selector: '#minContentLength', envKey: 'MIN_CONTENT_LENGTH' },
+    { selector: '#maxPageCount', envKey: 'MAX_PAGE_COUNT' },
+    { selector: '#ignoreTitlePatternInput', envKey: 'IGNORE_TITLE_PATTERNS' },
+    {
+      selector: '#ignoreRepeatedContent',
+      envKey: 'IGNORE_REPEATED_CONTENT',
+    },
     { selector: '#paperlessAiPort', envKey: 'PAPERLESS_AI_PORT' },
     { selector: '#reconciliationEnabled', envKey: 'RECONCILIATION_ENABLED' },
     {

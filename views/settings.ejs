@@ -42,6 +42,7 @@
         ] },
         { label: 'Processing', icon: 'i-clock', entries: [
             { id: 'schedule', title: 'Schedule and tag filters' },
+            { id: 'skip-rules', title: 'Skip rules', badge: 'New' },
             { id: 'runtime', title: 'Runtime controls' }
         ] },
         { label: 'Tag tools', icon: 'i-tag', entries: [
@@ -873,6 +874,51 @@
                                         <input type="hidden" id="ignoreTags" name="ignoreTags" value="<%= Array.isArray(config.IGNORE_TAGS) ? config.IGNORE_TAGS.join(',') : '' %>">
                                         <p class="zr-field__hint">Restart required</p>
                                     </div>
+                                    </div>
+                                </section>
+                        <%- entryClose() %>
+
+                        <%- entryOpen('skip-rules') %>
+                                <section class="zr-module" id="sec-skip-rules">
+                                    <div class="zr-module__head">
+                                        <h2 class="zr-module__title">Documents that skip OCR and AI</h2>
+                                    </div>
+                                    <div class="zr-module__body zr-col zr-col--loose">
+                                    <p class="zr-sm zr-muted">A document that matches a rule goes straight to the <a href="/ignored">ignored list</a>, with the rule as its reason. Take it off the list to have it processed anyway.</p>
+
+                                    <div class="zr-field zr-field--stacked">
+                                        <label for="maxPageCount" class="zr-field__name">Page limit</label>
+                                        <input type="number" id="maxPageCount" name="maxPageCount" min="0" step="1" value="<%= config.MAX_PAGE_COUNT || 0 %>" class="zr-input">
+                                        <p class="zr-field__hint">Documents with more pages are skipped. 0 means no limit. Uses the page count from Paperless-ngx.</p>
+                                    </div>
+
+                                    <div class="zr-field zr-field--stacked">
+                                        <label for="ignoreTitlePatternInput" class="zr-field__name">Skip titles containing</label>
+                                        <div class="zr-inputgroup">
+                                            <input type="text" id="ignoreTitlePatternInput" class="zr-input" placeholder="Part of a title or file name, then Enter">
+                                            <button type="button" id="ignoreTitlePatternAddButton" class="zr-btn zr-btn--primary">
+                                                <svg class="zr-icon zr-icon--sm" aria-hidden="true"><use href="/icons.svg#i-plus"/></svg>
+                                                Add
+                                            </button>
+                                        </div>
+                                        <div id="ignoreTitlePatternsContainer" class="zr-chips">
+                                            <% (Array.isArray(config.IGNORE_TITLE_PATTERNS) ? config.IGNORE_TITLE_PATTERNS : []).forEach(pattern => { %>
+                                                <div class="zr-chip">
+                                                    <span><%= pattern %></span>
+                                                    <button type="button" class="zr-link"><svg class="zr-icon" aria-hidden="true"><use href="/icons.svg#i-x"/></svg></button>
+                                                </div>
+                                            <% }); %>
+                                        </div>
+                                        <input type="hidden" id="ignoreTitlePatterns" name="ignoreTitlePatterns" value="<%= Array.isArray(config.IGNORE_TITLE_PATTERNS) ? config.IGNORE_TITLE_PATTERNS.join(',') : '' %>">
+                                        <p class="zr-field__hint">Matched anywhere in the title or the original file name, upper or lower case alike.</p>
+                                    </div>
+
+                                    <%- include('partials/settings-switch', {
+                                        id: 'ignoreRepeatedContent',
+                                        label: 'Skip copies of ignored documents',
+                                        checked: String(config.IGNORE_REPEATED_CONTENT || 'yes').toLowerCase() !== 'no',
+                                        hint: 'A document whose text is the same as one on the ignored list is skipped too. Compares the text Paperless-ngx recognised, so a newly generated PDF of the same terms still counts.'
+                                    }) %>
                                     </div>
                                 </section>
                         <%- entryClose() %>
